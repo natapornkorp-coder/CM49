@@ -2,7 +2,7 @@
 <html lang="th">
 <head>
 <meta charset="UTF-8">
-<title>Construction Progress Monitoring V.1</title>
+<title>Construction Progress Monitoring V.2</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
@@ -408,7 +408,7 @@ input[type=number], input[type=date], select, input[type=text]{padding:6px;borde
 <div id="topbar">
   <div class="brand">
     <img src="https://cm49.co.th/resources/images/logo-cm49.png" alt="CM49 Logo">
-    <span>Construction Progress Monitoring (Online)</span>
+    <span>Construction Progress Monitoring (V.2)</span>
     <input id="projectName" type="text" placeholder="ชื่อโครงการ (Project Name)" onblur="saveProjectMeta()">
   </div>
   <div class="top-actions">
@@ -802,44 +802,49 @@ function saveAll() {
 function saveProjectMeta() { saveAll(); }
 function saveProjectDates() { saveAll(); updateSummary(); }
 
-// --- Firebase Storage Helper (Fixed) ---
+// --- Firebase Storage Helper (Robust Update) ---
 
 const storageHelper = {
     async uploadImage(base64, path) {
-        if(!storage) return null;
+        if(!storage) {
+            alert("Firebase Storage is not initialized.");
+            return null;
+        }
         try {
             const ref = storage.ref().child(path);
             
-            // Extract content type and base64 data
-            const arr = base64.split(',');
-            const mime = arr[0].match(/:(.*?);/)[1];
-            const bstr = atob(arr[1]);
-            let n = bstr.length;
-            const u8arr = new Uint8Array(n);
-            
-            while(n--) {
-                u8arr[n] = bstr.charCodeAt(n);
+            // ปรับปรุงการแปลง Base64 เป็น Blob ให้เสถียรขึ้น
+            const parts = base64.split(';base64,');
+            const contentType = parts[0].split(':')[1];
+            const raw = window.atob(parts[1]);
+            const rawLength = raw.length;
+            const uInt8Array = new Uint8Array(rawLength);
+            for (let i = 0; i < rawLength; ++i) {
+                uInt8Array[i] = raw.charCodeAt(i);
             }
+            const blob = new Blob([uInt8Array], { type: contentType });
             
-            const blob = new Blob([u8arr], {type: mime});
-            const metadata = { contentType: mime };
-            
-            await ref.put(blob, metadata);
-            const url = await ref.getDownloadURL();
+            // กำหนด Metadata เพื่อป้องกัน Error บางประเภทบน Cloud
+            const metadata = {
+                contentType: contentType,
+            };
+
+            const uploadTask = await ref.put(blob, metadata);
+            const url = await uploadTask.ref.getDownloadURL();
             return url;
         } catch(e) {
-            console.error("Upload failed:", e);
-            alert("อัปโหลดรูปภาพล้มเหลว: " + e.message);
+            console.error("Upload failed details:", e);
+            alert("Upload ล้มเหลว: " + e.message);
             throw e;
         }
     },
     async deleteImage(url) {
-        if(!storage || !url.startsWith('http')) return;
+        if(!storage || !url || !url.startsWith('http')) return;
         try {
             const ref = storage.refFromURL(url);
             await ref.delete();
         } catch(e) {
-            console.warn("Delete image error (might not exist):", e);
+            console.warn("Delete image error (might already be gone):", e);
         }
     }
 };
@@ -895,14 +900,12 @@ function addWorkspace() {
     workspaces.push({ id: newId, name: name, zones: [], layout: null, layoutName: 'No Layout' });
     activeWorkspaceId = newId;
     saveAll();
-    // No need to call initUI, listener will trigger
 }
 
 function switchWorkspace(id) {
     activeWorkspaceId = id;
     closeZoneDetail();
     saveAll();
-    // Listener will trigger update
 }
 
 async function deleteWorkspace(id) {
@@ -935,7 +938,7 @@ function getActiveWS() {
 
 async function initLayout() {
     const ws = getActiveWS();
-    if(!ws) return; // Guard
+    if(!ws) return;
 
     map.eachLayer(layer => {
         if (layer instanceof L.GeoJSON || layer instanceof L.Marker || layer instanceof L.Polygon || layer instanceof L.ImageOverlay) {
@@ -945,7 +948,6 @@ async function initLayout() {
     imageOverlay = null;
 
     if (ws.layout) {
-        // Direct URL usage for Firebase Storage
         imageOverlay = L.imageOverlay(ws.layout, mapBounds).addTo(map);
         document.getElementById("layoutName").innerText = ws.layoutName;
         document.getElementById('btnSelectLayout').style.display = 'none';
@@ -961,10 +963,9 @@ document.getElementById('uploadPlan').addEventListener('change', async function(
     const file = e.target.files[0];
     if (!file) return;
     
-    // UI Feedback
     const btn = document.getElementById('btnSelectLayout');
     const oldText = btn.innerText;
-    btn.innerText = "Uploading...";
+    btn.innerText = "กำลังอัปโหลด...";
     
     const reader = new FileReader();
     reader.onload = async (event) => {
@@ -974,12 +975,13 @@ document.getElementById('uploadPlan').addEventListener('change', async function(
             const fileName = `layout_${ws.id}_${Date.now()}.jpg`;
             const url = await storageHelper.uploadImage(compressed, 'layouts/' + fileName);
             
-            ws.layout = url;
-            ws.layoutName = file.name;
-            saveAll();
+            if (url) {
+                ws.layout = url;
+                ws.layoutName = file.name;
+                saveAll();
+            }
         } catch(err) {
             console.error(err);
-            // Alert already handled in helper
         } finally {
             btn.innerText = oldText;
             document.getElementById('uploadPlan').value = '';
@@ -1010,8 +1012,6 @@ map.on('pm:create', e => {
 });
 
 function loadZones() {
-    // Clear existing (except tiles/image) handled in initLayout somewhat, but let's be safe
-    // Note: initLayout clears everything, so loadZones adds back polygons
     const ws = getActiveWS();
     if(!ws) return;
 
@@ -1058,12 +1058,10 @@ function updateSummary() {
     document.getElementById('barActual').style.backgroundColor = isDelay ? 'var(--danger)' : 'var(--success)';
     document.getElementById('summaryStatus').innerHTML = isDelay ? '<span style="color:var(--danger)">🔴 Delay</span>' : '<span style="color:var(--success)">🟢 On Track</span>';
 
-    // Call Predictive Analysis
     checkPredictiveRisks(act, pln, totalCost);
     updateSCurve(totalCost, isDelay ? '#dc2626' : '#16a34a', act, pln);
 }
 
-// --- New Feature: Predictive Alert System ---
 function checkPredictiveRisks(currentAct, currentPln, totalCost) {
     const alertBox = document.getElementById('predictiveAlertBox');
     const startVal = document.getElementById('projectStartDate').value;
@@ -1077,23 +1075,18 @@ function checkPredictiveRisks(currentAct, currentPln, totalCost) {
     const today = new Date();
     const end = new Date(endVal);
     const start = new Date(startVal);
-    // const totalDays = (end - start) / 86400000;
     const daysRemaining = (end - today) / 86400000;
     
-    if (daysRemaining <= 0) return; // Project over
+    if (daysRemaining <= 0) return;
 
     const remainingProgress = 100 - currentAct;
-    const requiredVelocity = remainingProgress / daysRemaining; // % per day needed
-
-    // Calculate Current Velocity (Average of last 7 days or overall if < 7 days)
-    // For simplicity in this structure, we use overall velocity:
+    const requiredVelocity = remainingProgress / daysRemaining;
     const daysPassed = (today - start) / 86400000;
     const currentVelocity = daysPassed > 0 ? currentAct / daysPassed : 0;
 
     let alertHtml = '';
     let alertClass = '';
 
-    // Condition 1: Impossible Catchup (Required Speed is > 2x Current Speed)
     if (requiredVelocity > (currentVelocity * 2) && currentVelocity > 0) {
         alertClass = 'alert-danger';
         alertHtml = `
@@ -1104,7 +1097,6 @@ function checkPredictiveRisks(currentAct, currentPln, totalCost) {
             </div>
         `;
     }
-    // Condition 2: Trending Down (Delay gap is widening) - Simple check if gap > 10%
     else if ((currentPln - currentAct) > 10) {
         alertClass = 'alert-warning';
         alertHtml = `
@@ -1116,10 +1108,10 @@ function checkPredictiveRisks(currentAct, currentPln, totalCost) {
     }
 
     if (alertHtml) {
-        alertBox.className = alertClass;
+        alertBox.className = 'card ' + alertClass;
+        alertBox.style.display = 'block';
         document.getElementById('predTitle').innerHTML = alertHtml.match(/<div class="alert-title">(.*?)<\/div>/)[1];
         document.getElementById('predMsg').innerHTML = alertHtml.match(/<div class="alert-msg">([\s\S]*?)<\/div>/)[1];
-        alertBox.style.display = 'block';
     } else {
         alertBox.style.display = 'none';
     }
@@ -1222,9 +1214,7 @@ function updateSCurve(totalCost, actualColor, currentAct, currentPln) {
         if (curr <= lastActualDate) {
             if (dailyHistory[dStr]) {
                 let wAct = 0;
-                // Support old format (simple object) and new format (with weather)
                 const snapshot = dailyHistory[dStr].data ? dailyHistory[dStr].data : dailyHistory[dStr];
-                
                 workspaces.forEach(ws => ws.zones.forEach(z => {
                     wAct += ((snapshot[z.id] || 0) * (parseFloat(z.cost) || 0));
                 }));
@@ -1280,40 +1270,8 @@ function updateSCurve(totalCost, actualColor, currentAct, currentPln) {
             responsive:true, maintainAspectRatio:false, 
             interaction: { intersect: false, mode: 'index' },
             scales:{ 
-                y:{
-                    min:0,
-                    max:100,
-                    title: {
-                        display: true,
-                        text: 'Progress (%)',
-                        font: { size: 12, weight: 'bold' }
-                    }
-                }, 
-                x:{ 
-                    ticks:{
-                        autoSkip: false,
-                        maxRotation: 0,
-                        minRotation: 0,
-                        callback: function(value, index, values) {
-                            const date = new Date(this.getLabelForValue(value));
-                            const day = date.getDate();
-                            if (day === 1) {
-                                return date.toLocaleDateString('en-GB', { month: 'short', year: '2-digit' });
-                            }
-                            return null;
-                        }
-                    }
-                }
-            },
-            plugins: {
-                tooltip: {
-                    callbacks: {
-                        title: function(context) {
-                            const d = new Date(context[0].label);
-                            return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
-                        }
-                    }
-                }
+                y:{ min:0, max:100 }, 
+                x:{ ticks:{ autoSkip:true, maxTicksLimit:10 } }
             }
         }
     });
@@ -1333,11 +1291,9 @@ function renderForecastAnalysis(method, act, pln, spi, end, today) {
         html += `• Estimated Finish: <strong>${estFinish.toLocaleDateString('th-TH')}</strong>`;
     } else if (method === 'bottomup') {
         html += `คำนวณจากความเร็วการทำงานแยกตามแต่ละ Zone และน้ำหนัก Cost<br>`;
-        html += `• ระบบวิเคราะห์ความพร้อมรายพื้นที่อัตโนมัติ`;
     } else {
         const factor = method === 'optimistic' ? 1.2 : (method === 'pessimistic' ? 0.7 : 1.0);
         html += `• Scenario Factor: <strong>x${factor}</strong> ของความเร็วแผนงาน<br>`;
-        html += `• เหมาะสำหรับการประเมินความเสี่ยงเชิงกลยุทธ์`;
     }
 
     document.getElementById('forecastContent').innerHTML = html;
@@ -1393,38 +1349,36 @@ async function deleteZone(id) {
 function triggerPhoto(id) {
     selectedZoneId = id;
     const input = document.createElement('input');
-    input.type = 'file'; 
-    input.accept = 'image/*';
-    input.multiple = true; 
+    input.type = 'file'; input.accept = 'image/*';
     input.onchange = async (e) => {
-        const files = Array.from(e.target.files); 
-        const ws = getActiveWS();
-        const z = ws.zones.find(x => x.id === id);
+        const file = e.target.files[0];
+        if (!file) return;
         
-        // Disable button visually if needed, but for now just process
-        for (let file of files) {
-            const reader = new FileReader();
-            reader.onload = async () => {
-                const compressed = await compressImage(reader.result, 800, 0.7);
-                // Modified to include proper timestamp ID for comparison filtering
-                const timestamp = Date.now();
-                // We use timestamp in filename to track "New" status in compare modal
-                const fileName = `photo_${timestamp}_${Math.random().toString(36).substr(2, 5)}.jpg`;
+        const reader = new FileReader();
+        reader.onload = async () => {
+            const compressed = await compressImage(reader.result, 800, 0.7);
+            const fileName = `photo_${id}_${Date.now()}.jpg`;
+            
+            try {
+                // UI feedback
+                const btn = e.target; // references input, not easily seen
+                console.log("Starting upload...");
                 
-                try {
-                    const url = await storageHelper.uploadImage(compressed, 'photos/' + fileName);
+                const url = await storageHelper.uploadImage(compressed, 'photos/' + fileName);
+                if (url) {
+                    const ws = getActiveWS();
+                    const z = ws.zones.find(x => x.id === id);
                     if(!z.photos) z.photos = [];
-                    // Store the full URL
                     z.photos.push(url);
-                    
                     saveAll();
                     if (selectedZoneId === id) selectZone(id);
-                } catch(err) {
-                    console.error("Photo upload failed", err);
+                    console.log("Upload success:", url);
                 }
-            };
-            reader.readAsDataURL(file);
-        }
+            } catch(err) {
+                console.error("Upload failed in triggerPhoto:", err);
+            }
+        };
+        reader.readAsDataURL(file);
     };
     input.click();
 }
@@ -1440,21 +1394,17 @@ async function selectZone(id) {
     document.getElementById('zdProgress').innerText = z.progress + "%";
     document.getElementById('zdCost').innerText = (z.cost || 0).toLocaleString();
     const photoWrap = document.getElementById('zdPhotos');
-    photoWrap.innerHTML = 'Loading photos...';
-    
-    // Clear array
-    while(photoWrap.firstChild) photoWrap.removeChild(photoWrap.firstChild);
+    photoWrap.innerHTML = '';
     
     if (z.photos && z.photos.length) {
         z.photos.forEach(imgSrc => {
             const div = document.createElement('div');
             div.className = 'photo-item';
             const img = document.createElement('img');
-            img.src = imgSrc; // Direct URL
+            img.src = imgSrc;
             img.onclick = () => { document.getElementById('imgModal').style.display="block"; document.getElementById('imgModalSrc').src=imgSrc; };
             div.appendChild(img);
             
-            // Add Delete Button
             const delBtn = document.createElement('span');
             delBtn.className = 'btn-del-photo';
             delBtn.innerText = 'x';
@@ -1468,7 +1418,6 @@ async function selectZone(id) {
                 }
             };
             div.appendChild(delBtn);
-
             photoWrap.appendChild(div);
         });
     } else {
@@ -1478,10 +1427,8 @@ async function selectZone(id) {
 
 function closeZoneDetail() { document.getElementById('zoneDetail').style.display = 'none'; }
 
-// --- New Feature: Fetch Weather ---
 async function fetchWeather() {
     try {
-        // Lat/Lon for Bangkok (Default)
         const lat = 13.7563;
         const lon = 100.5018;
         const res = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,weather_code&timezone=Asia%2FBangkok`);
@@ -1490,7 +1437,6 @@ async function fetchWeather() {
             currentWeather.temp = data.current.temperature_2m;
             currentWeather.code = data.current.weather_code;
             
-            // Map code to emoji
             const code = currentWeather.code;
             let icon = '☁️';
             if(code === 0) icon = '☀️';
@@ -1511,13 +1457,11 @@ async function saveDailyProgress() {
     const date = document.getElementById('historyDateSelector').value;
     if (!date) return;
     
-    // Ensure weather is up to date before saving
     await fetchWeather();
 
     let snapshot = {};
     workspaces.forEach(ws => ws.zones.forEach(z => { snapshot[z.id] = z.progress; }));
     
-    // Store Data + Weather
     dailyHistory[date] = {
         data: snapshot,
         weather: { ...currentWeather }
@@ -1529,8 +1473,7 @@ async function saveDailyProgress() {
 
 function clearDailyHistory() {
     if (confirm("ล้างประวัติความก้าวหน้าทั้งหมด (Cloud)?")) {
-        dailyHistory = {}; 
-        saveAll();
+        dailyHistory = {}; saveAll();
     }
 }
 
@@ -1550,13 +1493,11 @@ function exportExcel() {
     XLSX.writeFile(wb, `Report_${new Date().toISOString().slice(0,10)}.xlsx`);
 }
 
-// --- New Feature: Export PDF (Daily Report) ---
 async function exportDailyReportPDF() {
     const btn = document.querySelector('button.purple');
     const originalText = btn.innerText;
     btn.innerText = "Generating...";
 
-    // 1. Prepare Data
     document.getElementById('pdf-project-name').innerText = document.getElementById('projectName').value || "Project Name";
     const todayStr = new Date().toLocaleDateString('th-TH', { dateStyle: 'full' });
     document.getElementById('pdf-date').innerText = "Date: " + todayStr;
@@ -1566,11 +1507,9 @@ async function exportDailyReportPDF() {
     document.getElementById('pdf-actual').innerText = document.getElementById('sumActual').innerText;
     document.getElementById('pdf-status').innerHTML = document.getElementById('summaryStatus').innerText;
     
-    // 2. Populate Table
     const tbody = document.getElementById('pdf-table-body');
     tbody.innerHTML = "";
     workspaces.forEach(ws => {
-        // Header Row for Sheet
         const headerRow = document.createElement('tr');
         headerRow.innerHTML = `<td colspan="4" style="background:#f8fafc; font-weight:bold; color:#334155; padding:8px; border:1px solid #cbd5e1;">${ws.name}</td>`;
         tbody.appendChild(headerRow);
@@ -1587,46 +1526,33 @@ async function exportDailyReportPDF() {
         });
     });
 
-    // 3. Render and Save
     try {
         const element = document.getElementById('pdf-print-container');
-        // Temporarily make it visible in DOM but off-screen (css handles this)
-        
         const canvas = await html2canvas(element, { scale: 2 });
         const imgData = canvas.toDataURL('image/png');
-        
         const { jsPDF } = window.jspdf;
         const pdf = new jsPDF('p', 'mm', 'a4');
         const pdfWidth = pdf.internal.pageSize.getWidth();
         const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
-        
         pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
         pdf.save(`DailyReport_${new Date().toISOString().slice(0,10)}.pdf`);
-        
     } catch (e) {
         console.error("PDF Gen Error", e);
-        alert("Error generating PDF");
     } finally {
         btn.innerText = originalText;
     }
 }
 
-// --- New Feature: Comparison System Functions ---
 function openCompareModal() {
     const modal = document.getElementById('compareModal');
     const selA = document.getElementById('compareDateA');
     const selB = document.getElementById('compareDateB');
-    
-    // Populate Dropdowns
     const dates = Object.keys(dailyHistory).sort();
     let opts = '<option value="">Select Date...</option>';
     dates.forEach(d => opts += `<option value="${d}">${d}</option>`);
-    
     selA.innerHTML = opts;
     selB.innerHTML = opts + `<option value="CURRENT" selected>Current (Live)</option>`;
-    
-    if(dates.length > 0) selA.value = dates[dates.length - 1]; // Select last saved by default
-    
+    if(dates.length > 0) selA.value = dates[dates.length - 1];
     renderComparison();
     modal.style.display = 'block';
 }
@@ -1642,7 +1568,6 @@ async function renderComparison() {
         return;
     }
 
-    // Helper to get data (support old format)
     const getHist = (d) => {
         if (d === 'CURRENT') {
             let snap = {};
@@ -1650,13 +1575,12 @@ async function renderComparison() {
             return { data: snap, weather: { ...currentWeather } };
         }
         if (!dailyHistory[d]) return { data: {}, weather: {} };
-        return dailyHistory[d].data ? dailyHistory[d] : { data: dailyHistory[d], weather: {} }; // compat check
+        return dailyHistory[d].data ? dailyHistory[d] : { data: dailyHistory[d], weather: {} };
     };
 
     const dataA = getHist(dateA);
     const dataB = getHist(dateB);
 
-    // Calculate Totals
     let totalCost = 0, wSumA = 0, wSumB = 0;
     workspaces.forEach(ws => ws.zones.forEach(z => {
         const cost = parseFloat(z.cost) || 0;
@@ -1668,33 +1592,24 @@ async function renderComparison() {
     const pctA = totalCost > 0 ? (wSumA / totalCost) : 0;
     const pctB = totalCost > 0 ? (wSumB / totalCost) : 0;
 
-    // Render Top Stats
     document.getElementById('compValA').innerText = pctA.toFixed(2) + '%';
     document.getElementById('compValB').innerText = pctB.toFixed(2) + '%';
     
-    // Render Weather Stats
-    const renderWeather = (w) => (w && w.temp) ? `🌡️ ${w.temp}°C (Code: ${w.code})` : 'No weather data';
+    const renderWeather = (w) => (w && w.temp) ? `🌡️ ${w.temp}°C` : 'No data';
     document.getElementById('compWeatherA').innerText = renderWeather(dataA.weather);
     document.getElementById('compWeatherB').innerText = renderWeather(dataB.weather);
 
-    // Render Table Rows (Zone diff + New Photos)
-    // photo_TIMESTAMP_....
     const timeA = new Date(dateA).getTime();
-    const timeB = (dateB === 'CURRENT') ? Date.now() : new Date(dateB).getTime() + 86400000; // End of day B
+    const timeB = (dateB === 'CURRENT') ? Date.now() : new Date(dateB).getTime() + 86400000;
 
     for (const ws of workspaces) {
         for (const z of ws.zones) {
             const pA = dataA.data[z.id] || 0;
             const pB = dataB.data[z.id] || 0;
             const diff = pB - pA;
-            
-            // Filter relevant photos
             let photoHtml = '';
             if (z.photos && z.photos.length > 0) {
                 const relevantPhotos = z.photos.filter(pid => {
-                    // Extract timestamp from URL if we used our naming convention
-                    // Format: .../photos%2Fphoto_TIMESTAMP_RANDOM.jpg...
-                    // Decoding safe extraction:
                     const match = pid.match(/photo_(\d+)_/);
                     if (match && match[1]) {
                          const ts = parseInt(match[1]);
@@ -1740,10 +1655,8 @@ async function initUI() {
 window.onload = () => {
     document.getElementById('historyDateSelector').value = new Date().toISOString().slice(0, 10);
     setInterval(() => { document.getElementById('currentTime').innerText = 'Current : ' + new Date().toLocaleString(); }, 1000);
-    
-    // Initial fetches
     fetchWeather();
-    initFirebase(); // Starts the app and loads data from cloud
+    initFirebase();
 };
 
 window.onclick = (event) => {
