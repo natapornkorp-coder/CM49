@@ -802,18 +802,36 @@ function saveAll() {
 function saveProjectMeta() { saveAll(); }
 function saveProjectDates() { saveAll(); updateSummary(); }
 
-// --- Firebase Storage Helper ---
+// --- Firebase Storage Helper (Fixed) ---
 
 const storageHelper = {
     async uploadImage(base64, path) {
         if(!storage) return null;
-        const ref = storage.ref().child(path);
-        // Convert Base64 to Blob
-        const response = await fetch(base64);
-        const blob = await response.blob();
-        await ref.put(blob);
-        const url = await ref.getDownloadURL();
-        return url;
+        try {
+            const ref = storage.ref().child(path);
+            
+            // Extract content type and base64 data
+            const arr = base64.split(',');
+            const mime = arr[0].match(/:(.*?);/)[1];
+            const bstr = atob(arr[1]);
+            let n = bstr.length;
+            const u8arr = new Uint8Array(n);
+            
+            while(n--) {
+                u8arr[n] = bstr.charCodeAt(n);
+            }
+            
+            const blob = new Blob([u8arr], {type: mime});
+            const metadata = { contentType: mime };
+            
+            await ref.put(blob, metadata);
+            const url = await ref.getDownloadURL();
+            return url;
+        } catch(e) {
+            console.error("Upload failed:", e);
+            alert("อัปโหลดรูปภาพล้มเหลว: " + e.message);
+            throw e;
+        }
     },
     async deleteImage(url) {
         if(!storage || !url.startsWith('http')) return;
@@ -961,7 +979,7 @@ document.getElementById('uploadPlan').addEventListener('change', async function(
             saveAll();
         } catch(err) {
             console.error(err);
-            alert("Upload failed");
+            // Alert already handled in helper
         } finally {
             btn.innerText = oldText;
             document.getElementById('uploadPlan').value = '';
@@ -1392,14 +1410,18 @@ function triggerPhoto(id) {
                 const timestamp = Date.now();
                 // We use timestamp in filename to track "New" status in compare modal
                 const fileName = `photo_${timestamp}_${Math.random().toString(36).substr(2, 5)}.jpg`;
-                const url = await storageHelper.uploadImage(compressed, 'photos/' + fileName);
                 
-                if(!z.photos) z.photos = [];
-                // Store the full URL
-                z.photos.push(url);
-                
-                saveAll();
-                if (selectedZoneId === id) selectZone(id);
+                try {
+                    const url = await storageHelper.uploadImage(compressed, 'photos/' + fileName);
+                    if(!z.photos) z.photos = [];
+                    // Store the full URL
+                    z.photos.push(url);
+                    
+                    saveAll();
+                    if (selectedZoneId === id) selectZone(id);
+                } catch(err) {
+                    console.error("Photo upload failed", err);
+                }
             };
             reader.readAsDataURL(file);
         }
